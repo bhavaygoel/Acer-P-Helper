@@ -38,6 +38,8 @@ namespace PredatorControlApp
         private FanCurveGraph _graphCpu = null!;
         private FanCurveGraph _graphGpu = null!;
         private PredatorButton _btnReset = null!;
+        private PredatorButton _btnQuiet = null!;
+        private PredatorButton _btnGaming = null!;
         private PredatorButton _btnApply = null!;
         private System.Windows.Forms.Timer _flashTimer = null!;
 
@@ -46,6 +48,17 @@ namespace PredatorControlApp
         private const int TitleBarHeight = 36;
         private const int SepHeight = 1;
         private const int ButtonRowHeight = 50;
+
+        #endregion
+
+        #region Presets
+
+        // Tuned on a Helios 300 (PH315-53). The GPU ramps earlier than the CPU because
+        // the RTX 3060 starts shedding clocks around 87°C.
+        internal static readonly List<Point> QuietCpu = new() { new(30,10), new(50,15), new(60,25), new(70,40), new(78,55), new(85,75), new(92,95), new(100,100) };
+        internal static readonly List<Point> QuietGpu = new() { new(30,10), new(50,15), new(60,30), new(68,45), new(74,60), new(80,80), new(85,100), new(100,100) };
+        internal static readonly List<Point> GamingCpu = new() { new(30,20), new(50,30), new(60,40), new(68,55), new(75,70), new(82,85), new(88,100), new(100,100) };
+        internal static readonly List<Point> GamingGpu = new() { new(30,20), new(50,30), new(58,45), new(65,60), new(70,75), new(76,90), new(80,100), new(100,100) };
 
         #endregion
 
@@ -193,6 +206,25 @@ namespace PredatorControlApp
             _btnReset.Click += BtnReset_Click;
             Controls.Add(_btnReset);
 
+            int presetGap = 12;
+            _btnQuiet = new PredatorButton
+            {
+                Text = "Quiet",
+                Size = new Size(btnWidth, btnHeight),
+                Location = new Point(_btnReset.Right + presetGap, btnY)
+            };
+            _btnQuiet.Click += (s, e) => LoadPreset(QuietCpu, QuietGpu);
+            Controls.Add(_btnQuiet);
+
+            _btnGaming = new PredatorButton
+            {
+                Text = "Gaming",
+                Size = new Size(btnWidth, btnHeight),
+                Location = new Point(_btnQuiet.Right + presetGap, btnY)
+            };
+            _btnGaming.Click += (s, e) => LoadPreset(GamingCpu, GamingGpu);
+            Controls.Add(_btnGaming);
+
             _btnApply = new PredatorButton
             {
                 Text = "Apply",
@@ -221,6 +253,13 @@ namespace PredatorControlApp
         {
             _graphCpu.Points = _graphCpu.DefaultPoints;
             _graphGpu.Points = _graphGpu.DefaultPoints;
+        }
+
+        // Loads the preset into the editor; it takes effect once the user presses Apply
+        private void LoadPreset(List<Point> cpu, List<Point> gpu)
+        {
+            _graphCpu.Points = new List<Point>(cpu);
+            _graphGpu.Points = new List<Point>(gpu);
         }
 
         private void BtnApply_Click(object? sender, EventArgs e)

@@ -30,6 +30,9 @@ namespace PredatorControlApp
 
             CheckPowerLineDebounce();
             CheckCurveHysteresis();
+
+            foreach (var preset in new[] { FanCurveForm.QuietCpu, FanCurveForm.QuietGpu, FanCurveForm.GamingCpu, FanCurveForm.GamingGpu })
+                Debug.Assert(FanCurveGraph.Normalize(preset).SequenceEqual(preset), "presets must already be normalized");
         }
 
         private static void CheckCurveHysteresis()

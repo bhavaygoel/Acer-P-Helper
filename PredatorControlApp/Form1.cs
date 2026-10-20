@@ -191,6 +191,14 @@ namespace PredatorControlApp
 
         
         private GameSyncController _gameSync = null!;
+        private readonly PredatorKeyHook _predatorKey = new();
+        private PredatorDropDown _cboPredatorKey = null!;
+        private PredatorButton _btnLearnKey = null!;
+        private System.Windows.Forms.Timer? _learnTimeout;
+        private byte _lastNonTurboPower = 0x01;
+
+        // PredatorSense key actions, in dropdown order
+        private const int KeyActionOpenApp = 0, KeyActionCycleModes = 1, KeyActionToggleTurbo = 2, KeyActionNothing = 3;
         private PredatorToggle _switchGameSync = null!;
         private Label _lblGameSyncStatus = null!;
         private PredatorButton _btnConfigureGames = null!;
@@ -256,6 +264,10 @@ namespace PredatorControlApp
             }
 
             LoadMemory();
+
+            _predatorKey.Pressed += () => BeginInvoke(OnPredatorKey);
+            _predatorKey.Learned += (scan, ext) => BeginInvoke(() => OnPredatorKeyLearned(scan, ext));
+            UpdatePredatorKeyHook();
 
             _gameSync = new GameSyncController();
             _gameSync.GameDetected += OnGameDetected;
@@ -795,6 +807,26 @@ namespace PredatorControlApp
             };
 
             y += switchH + S(28);
+            MakeSectionHeader("PREDATORSENSE KEY", pad, y);
+
+            y += S(24);
+            int keyDropH = S(34);
+            _cboPredatorKey = new PredatorDropDown { Location = new Point(pad, y), Size = new Size(contentW, keyDropH) };
+            _cboPredatorKey.Items.AddRange(new[] { "Open Predator Control", "Cycle Quiet → Balanced → Perf", "Toggle Turbo", "Do nothing (pass through)" });
+            _cboPredatorKey.SelectedIndex = KeyActionOpenApp;
+            _contentPanel.Controls.Add(_cboPredatorKey);
+            _cboPredatorKey.SelectedIndexChanged += (s, e) =>
+            {
+                SaveState("PKeyAction", _cboPredatorKey.SelectedIndex);
+                UpdatePredatorKeyHook();
+            };
+
+            y += keyDropH + S(10);
+            _btnLearnKey = MakeButton("", pad, y, contentW, btnH);
+            _btnLearnKey.Click += (s, e) => StartLearningKey();
+            UpdateLearnKeyText();
+
+            y += btnH + S(28);
             MakeSectionHeader("KEYBOARD RGB MODE", pad, y);
             
             y += S(24);
@@ -1423,6 +1455,11 @@ namespace PredatorControlApp
             try
             {
                 using var key = Registry.CurrentUser.CreateSubKey(@"SOFTWARE\PredatorControl");
+                _predatorKey.ScanCode = GetInt(key, "PKeyScan", PredatorKeyHook.DefaultScanCode, 0x01, 0xFF);
+                _predatorKey.Extended = GetInt(key, "PKeyExt", PredatorKeyHook.DefaultExtended ? 1 : 0, 0, 1) == 1;
+                _cboPredatorKey.SelectedIndex = GetInt(key, "PKeyAction", KeyActionOpenApp, KeyActionOpenApp, KeyActionNothing);
+                UpdateLearnKeyText();
+
                 int savedPower = GetInt(key, "Power", 0x01, 0x00, 0xFF);
                 int savedFan = GetInt(key, "Fan", 0x01, 0x00, 0xFF);
                 int savedRgbMode = GetInt(key, "RGB_Mode", 3, 0, 7);
@@ -1849,6 +1886,107 @@ namespace PredatorControlApp
 
         private void HideApp() => this.Hide();
 
+        #region PredatorSense Key
+
+        private void UpdatePredatorKeyHook()
+        {
+            bool learning = _learnTimeout != null;
+            if (_cboPredatorKey.SelectedIndex == KeyActionNothing && !learning)
+                _predatorKey.Stop();
+            else
+                _predatorKey.Start();
+        }
+
+        private void UpdateLearnKeyText()
+        {
+            _btnLearnKey.Text = $"⌨  Set Key  (current: {PredatorKeyHook.Describe(_predatorKey.ScanCode, _predatorKey.Extended)})";
+        }
+
+        private void StartLearningKey()
+        {
+            _learnTimeout?.Dispose();
+            _learnTimeout = new System.Windows.Forms.Timer { Interval = 10000 };
+            _learnTimeout.Tick += (s, e) =>
+            {
+                _predatorKey.CancelLearn();
+                StopLearnTimeout();
+                UpdateLearnKeyText();
+                UpdatePredatorKeyHook();
+                MessageBox.Show(this,
+                    "No key press was seen. If the PredatorSense key doesn't register here, your model sends it in a way this app can't catch yet.",
+                    "Set PredatorSense Key", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            };
+            _learnTimeout.Start();
+            _btnLearnKey.Text = "Press the PredatorSense key now…";
+            _predatorKey.Learn();
+            UpdatePredatorKeyHook();
+        }
+
+        private void StopLearnTimeout()
+        {
+            _learnTimeout?.Stop();
+            _learnTimeout?.Dispose();
+            _learnTimeout = null;
+        }
+
+        private void OnPredatorKeyLearned(int scanCode, bool extended)
+        {
+            StopLearnTimeout();
+            SaveState("PKeyScan", scanCode);
+            SaveState("PKeyExt", extended ? 1 : 0);
+            UpdateLearnKeyText();
+            UpdatePredatorKeyHook();
+        }
+
+        private void OnPredatorKey()
+        {
+            switch (_cboPredatorKey.SelectedIndex)
+            {
+                case KeyActionOpenApp:
+                    ShowApp();
+                    break;
+
+                case KeyActionCycleModes:
+                {
+                    byte next = GetCurrentPowerByte() switch
+                    {
+                        0x00 => 0x01,
+                        0x01 => _btnPerform.Enabled ? (byte)0x04 : (byte)0x00,
+                        _ => 0x00
+                    };
+                    ApplyPowerMode(next, PowerByteToBtn(next));
+                    NotifyPowerMode(next);
+                    break;
+                }
+
+                case KeyActionToggleTurbo:
+                {
+                    byte current = GetCurrentPowerByte();
+                    byte next = current == 0x05 ? _lastNonTurboPower : (byte)0x05;
+                    if (next == 0x05 && !_btnTurbo.Enabled) return;
+                    if (current != 0x05) _lastNonTurboPower = current;
+                    ApplyPowerMode(next, PowerByteToBtn(next));
+                    NotifyPowerMode(next);
+                    break;
+                }
+            }
+        }
+
+        private void NotifyPowerMode(byte mode)
+        {
+            string name = mode switch
+            {
+                0x00 => "Quiet",
+                0x04 => "Performance",
+                0x05 => "Turbo",
+                0x06 => "Eco",
+                _ => "Balanced"
+            };
+            try { _trayIcon.ShowBalloonTip(1500, "Predator Control", $"Power mode: {name}", ToolTipIcon.None); } catch { }
+        }
+
+        #endregion
+
         // Once the app stops, nothing keeps the curve updated, so the fans would stay
         // at whatever speed was last applied. Hand them back to the firmware instead.
         internal void RestoreFansIfCurveActive()
@@ -1872,6 +2010,7 @@ namespace PredatorControlApp
             {
                 _trayIcon.Visible = false;
                 _timer.Stop();
+                _predatorKey.Dispose();
                 RestoreFansIfCurveActive();
                 _gameSync.Dispose();
                 _appMutex?.Dispose();

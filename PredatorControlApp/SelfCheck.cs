@@ -30,6 +30,8 @@ namespace PredatorControlApp
 
             CheckPowerLineDebounce();
             CheckCurveHysteresis();
+            Debug.Assert(!PredatorKeyHook.IsSpecialKey(0x20) && !PredatorKeyHook.IsSpecialKey(0x41), "normal keys must not be learnable");
+            Debug.Assert(PredatorKeyHook.IsSpecialKey(0xFF) && PredatorKeyHook.IsSpecialKey(0x00), "unmapped OEM keys must be learnable");
 
             Debug.Assert(GameDetector.IsInGameLibrary(@"D:\SteamLibrary\steamapps\common\Cyberpunk 2077\bin\x64\Cyberpunk2077.exe", "Cyberpunk2077"), "Steam game must be detected");
             Debug.Assert(!GameDetector.IsInGameLibrary(@"C:\Program Files\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe", "EpicGamesLauncher"), "launchers must not count as games");

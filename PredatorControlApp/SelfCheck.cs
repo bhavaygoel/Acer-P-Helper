@@ -29,6 +29,25 @@ namespace PredatorControlApp
             Debug.Assert(Form1.AcProfileValues[4] == 0x05, "AC Turbo must map to 0x05");
 
             CheckPowerLineDebounce();
+            CheckCurveHysteresis();
+            Debug.Assert(!PredatorKeyHook.IsSpecialKey(0x20) && !PredatorKeyHook.IsSpecialKey(0x41), "normal keys must not be learnable");
+            Debug.Assert(PredatorKeyHook.IsSpecialKey(0xFF) && PredatorKeyHook.IsSpecialKey(0x00), "unmapped OEM keys must be learnable");
+
+            Debug.Assert(GameDetector.IsInGameLibrary(@"D:\SteamLibrary\steamapps\common\Cyberpunk 2077\bin\x64\Cyberpunk2077.exe", "Cyberpunk2077"), "Steam game must be detected");
+            Debug.Assert(!GameDetector.IsInGameLibrary(@"C:\Program Files\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe", "EpicGamesLauncher"), "launchers must not count as games");
+            Debug.Assert(!GameDetector.IsInGameLibrary(@"C:\Program Files\Notepad++\notepad++.exe", "notepad++"), "apps outside game libraries need another signal");
+
+            foreach (var preset in new[] { FanCurveForm.QuietCpu, FanCurveForm.QuietGpu, FanCurveForm.GamingCpu, FanCurveForm.GamingGpu })
+                Debug.Assert(FanCurveGraph.Normalize(preset).SequenceEqual(preset), "presets must already be normalized");
+        }
+
+        private static void CheckCurveHysteresis()
+        {
+            var curve = new List<Point> { new(40, 20), new(80, 100) };
+            Debug.Assert(Form1.CurveSpeed(curve, 60, -1) == 60, "first sample uses the curve directly");
+            Debug.Assert(Form1.CurveSpeed(curve, 70, 60) == 80, "rising temps spin up immediately");
+            Debug.Assert(Form1.CurveSpeed(curve, 68, 80) == 80, "a small drop must not spin down");
+            Debug.Assert(Form1.CurveSpeed(curve, 60, 80) == 68, "a large drop spins down, minus the hysteresis");
         }
 
         private static void CheckPowerLineDebounce()

@@ -126,6 +126,21 @@ If you want to fully remove it:
 
 ---
 
+## Helios 300 (PH315-53) notes
+
+This model is detected automatically and handled differently:
+
+- **Turbo** uses the PH315-53's own turbo sequence (LED, max fans, CPU/GPU overclock level), since this firmware has no Quiet/Balanced/Performance modes.
+- **Performance** raises the same CPU/GPU limits as Turbo but leaves the fans on your chosen mode or curve. Quiet, Balanced and Eco use stock limits and only switch the Windows power overlay.
+- **Two fan curve sets**: *Everyday*, used in Quiet, Balanced and Eco, and *Performance*, used in Perf mode (it defaults to the Gaming preset). Switching power mode, by hand or through Game Sync, switches the curve with it. The editor has a tab for each set, plus Quiet and Gaming presets tuned for this model.
+- **PredatorSense key** (any model): the dedicated key can open the app, cycle Quiet → Balanced → Perf, or toggle Turbo, and a notification shows the new mode. If it doesn't respond out of the box, use *Set Key* and press it once so the app learns its scan code. Only special keys can be learned, so a normal key can't be captured by accident.
+- **Automatic game detection** (any model): with Game Sync on, a game in the foreground switches to Performance while plugged in, and your previous mode comes back when the game closes. You don't have to list the game. It counts as a game if Windows Game Bar knows it, if it's installed in a Steam/Epic/GOG/Xbox/Riot/EA/Ubisoft/Battle.net/Rockstar library, or if it's fullscreen and keeping the GPU above 40%. Games you add under Configure Executables still use their own profiles.
+- **GPU temperature** falls back to the NVIDIA driver (NVML) when the EC reports 0, which it does with recent NVIDIA drivers. On battery the fallback is skipped so the dGPU can sleep, and the GPU fan curve follows the CPU temperature instead.
+- **Fan curves** spin up immediately but only spin down after a 4°C drop, so the fans don't hunt.
+- **Closing or crashing** with a fan curve active hands the fans back to BIOS auto, so they never stay stuck at a low speed.
+
+The WMI values for this model come from [rawPSense](https://github.com/joserodpt/rawPSense), which verified them on a PH315-53.
+
 ## How It Works
 
 The app talks directly to the `AcerGamingFunction` WMI class in the `root\WMI` namespace — the same low-level interface PredatorSense uses under the hood. No Acer background services are required.

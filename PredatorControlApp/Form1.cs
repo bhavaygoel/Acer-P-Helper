@@ -160,8 +160,19 @@ namespace PredatorControlApp
         private bool _fanCurveEnabled;
         private List<Point> _cpuCurvePoints = new() { new(30,10), new(45,15), new(55,30), new(65,50), new(72,65), new(80,80), new(88,92), new(95,100) };
         private List<Point> _gpuCurvePoints = new() { new(30,10), new(45,15), new(55,30), new(65,50), new(72,65), new(80,80), new(88,92), new(95,100) };
+        private List<Point> _cpuPerfCurvePoints = new(FanCurveForm.GamingCpu);
+        private List<Point> _gpuPerfCurvePoints = new(FanCurveForm.GamingGpu);
+
+        // Performance mode has its own curve set; Quiet, Balanced and Eco share the everyday one
+        private bool UsingPerfCurve => GetCurrentPowerByte() == 0x04;
+        private List<Point> ActiveCpuCurve => UsingPerfCurve ? _cpuPerfCurvePoints : _cpuCurvePoints;
+        private List<Point> ActiveGpuCurve => UsingPerfCurve ? _gpuPerfCurvePoints : _gpuCurvePoints;
         private int _lastCurveCpuSpeed = -1;
         private int _lastCurveGpuSpeed = -1;
+
+        // Fans spin up as soon as the curve asks, but only spin down once the temperature
+        // has dropped this many degrees, so they don't hunt around a curve point.
+        internal const int CurveHysteresis = 4;
         
         private PredatorButton? _activePowerBtn, _activeFanBtn, _activeDisplayBtn;
         private bool _isUpdatingBattery;
@@ -180,6 +191,14 @@ namespace PredatorControlApp
 
         
         private GameSyncController _gameSync = null!;
+        private readonly PredatorKeyHook _predatorKey = new();
+        private PredatorDropDown _cboPredatorKey = null!;
+        private PredatorButton _btnLearnKey = null!;
+        private System.Windows.Forms.Timer? _learnTimeout;
+        private byte _lastNonTurboPower = 0x01;
+
+        // PredatorSense key actions, in dropdown order
+        private const int KeyActionOpenApp = 0, KeyActionCycleModes = 1, KeyActionToggleTurbo = 2, KeyActionNothing = 3;
         private PredatorToggle _switchGameSync = null!;
         private Label _lblGameSyncStatus = null!;
         private PredatorButton _btnConfigureGames = null!;
@@ -246,6 +265,10 @@ namespace PredatorControlApp
 
             LoadMemory();
 
+            _predatorKey.Pressed += () => BeginInvoke(OnPredatorKey);
+            _predatorKey.Learned += (scan, ext) => BeginInvoke(() => OnPredatorKeyLearned(scan, ext));
+            UpdatePredatorKeyHook();
+
             _gameSync = new GameSyncController();
             _gameSync.GameDetected += OnGameDetected;
             _gameSync.GameExited += OnGameExited;
@@ -255,6 +278,8 @@ namespace PredatorControlApp
                 _switchGameSync.Checked = true;
                 _lblGameSyncStatus.Text = "Active \u2014 Monitoring";
             }
+
+            Program.EmergencyRestore = RestoreFansIfCurveActive;
 
             _timer.Interval = 2000;
             _timer.Tick += UpdateTelemetry;
@@ -782,6 +807,26 @@ namespace PredatorControlApp
             };
 
             y += switchH + S(28);
+            MakeSectionHeader("PREDATORSENSE KEY", pad, y);
+
+            y += S(24);
+            int keyDropH = S(34);
+            _cboPredatorKey = new PredatorDropDown { Location = new Point(pad, y), Size = new Size(contentW, keyDropH) };
+            _cboPredatorKey.Items.AddRange(new[] { "Open Predator Control", "Cycle Quiet → Balanced → Perf", "Toggle Turbo", "Do nothing (pass through)" });
+            _cboPredatorKey.SelectedIndex = KeyActionOpenApp;
+            _contentPanel.Controls.Add(_cboPredatorKey);
+            _cboPredatorKey.SelectedIndexChanged += (s, e) =>
+            {
+                SaveState("PKeyAction", _cboPredatorKey.SelectedIndex);
+                UpdatePredatorKeyHook();
+            };
+
+            y += keyDropH + S(10);
+            _btnLearnKey = MakeButton("", pad, y, contentW, btnH);
+            _btnLearnKey.Click += (s, e) => StartLearningKey();
+            UpdateLearnKeyText();
+
+            y += btnH + S(28);
             MakeSectionHeader("KEYBOARD RGB MODE", pad, y);
             
             y += S(24);
@@ -950,6 +995,9 @@ namespace PredatorControlApp
         private void ApplyPowerMode(byte mode, PredatorButton btn)
         {
             _wmi.SetPowerMode(mode);
+            // Power changes can rewrite fan speeds, so let the curve re-send its values
+            _lastCurveCpuSpeed = -1;
+            _lastCurveGpuSpeed = -1;
             HighlightBtn(btn, ref _activePowerBtn);
             SaveState("Power", mode);
 
@@ -1038,17 +1086,18 @@ namespace PredatorControlApp
             }
 
             _fanCurveForm = new FanCurveForm();
-            _fanCurveForm.SetCpuCurve(_cpuCurvePoints);
-            _fanCurveForm.SetGpuCurve(_gpuCurvePoints);
+            _fanCurveForm.SetCurves(_cpuCurvePoints, _gpuCurvePoints, _cpuPerfCurvePoints, _gpuPerfCurvePoints, UsingPerfCurve);
             _fanCurveForm.UpdateTemps(_cpuTemp, _gpuTemp);
 
             _fanCurveForm.ApplyClicked += (s, args) =>
             {
                 _cpuCurvePoints = args.CpuPoints;
                 _gpuCurvePoints = args.GpuPoints;
+                _cpuPerfCurvePoints = args.PerfCpuPoints;
+                _gpuPerfCurvePoints = args.PerfGpuPoints;
 
-                int cpuSpeed = _fanCurveForm!.InterpolateCpuSpeed(_cpuTemp);
-                int gpuSpeed = _fanCurveForm!.InterpolateGpuSpeed(_gpuTemp);
+                int cpuSpeed = InterpolateCurve(ActiveCpuCurve, _cpuTemp);
+                int gpuSpeed = InterpolateCurve(ActiveGpuCurve, _gpuTemp > 0 ? _gpuTemp : _cpuTemp);
 
                 bool cpuOk = _wmi.SetCpuFanSpeed((byte)cpuSpeed);
                 bool gpuOk = _wmi.SetGpuFanSpeed((byte)gpuSpeed);
@@ -1068,6 +1117,8 @@ namespace PredatorControlApp
 
                     SaveCurveToRegistry("CpuCurve", _cpuCurvePoints);
                     SaveCurveToRegistry("GpuCurve", _gpuCurvePoints);
+                    SaveCurveToRegistry("CpuCurvePerf", _cpuPerfCurvePoints);
+                    SaveCurveToRegistry("GpuCurvePerf", _gpuPerfCurvePoints);
                     SaveState("FanCurveEnabled", 1);
                 }
             };
@@ -1245,9 +1296,10 @@ namespace PredatorControlApp
             _gameSync.SetPreGameSnapshot(CaptureCurrentState());
 
             ApplyPowerMode(profile.PowerMode, PowerByteToBtn(profile.PowerMode));
-            ApplyFanMode(profile.FanMode, FanByteToBtn(profile.FanMode));
+            if (!profile.KeepFans)
+                ApplyFanMode(profile.FanMode, FanByteToBtn(profile.FanMode));
 
-            if (profile.FanMode == 0x03)
+            if (!profile.KeepFans && profile.FanMode == 0x03)
             {
                 _fanCurveEnabled = false;
                 HighlightBtn(_btnFixedSpeed, ref _activeCustomSubBtn);
@@ -1403,6 +1455,11 @@ namespace PredatorControlApp
             try
             {
                 using var key = Registry.CurrentUser.CreateSubKey(@"SOFTWARE\PredatorControl");
+                _predatorKey.ScanCode = GetInt(key, "PKeyScan", PredatorKeyHook.DefaultScanCode, 0x01, 0xFF);
+                _predatorKey.Extended = GetInt(key, "PKeyExt", PredatorKeyHook.DefaultExtended ? 1 : 0, 0, 1) == 1;
+                _cboPredatorKey.SelectedIndex = GetInt(key, "PKeyAction", KeyActionOpenApp, KeyActionOpenApp, KeyActionNothing);
+                UpdateLearnKeyText();
+
                 int savedPower = GetInt(key, "Power", 0x01, 0x00, 0xFF);
                 int savedFan = GetInt(key, "Fan", 0x01, 0x00, 0xFF);
                 int savedRgbMode = GetInt(key, "RGB_Mode", 3, 0, 7);
@@ -1449,6 +1506,10 @@ namespace PredatorControlApp
                 var loadedGpu = LoadCurveFromRegistry("GpuCurve");
                 if (loadedCpu != null) _cpuCurvePoints = loadedCpu;
                 if (loadedGpu != null) _gpuCurvePoints = loadedGpu;
+                var loadedPerfCpu = LoadCurveFromRegistry("CpuCurvePerf");
+                var loadedPerfGpu = LoadCurveFromRegistry("GpuCurvePerf");
+                if (loadedPerfCpu != null) _cpuPerfCurvePoints = loadedPerfCpu;
+                if (loadedPerfGpu != null) _gpuPerfCurvePoints = loadedPerfGpu;
 
                 int savedCurveEnabled = GetInt(key, "FanCurveEnabled", 0, 0, 1);
                 if (savedCurveEnabled == 1 && fanMode == 0x03)
@@ -1460,8 +1521,8 @@ namespace PredatorControlApp
                 {
                     if (_fanCurveEnabled)
                     {
-                        int cpuSpeed = InterpolateCurve(_cpuCurvePoints, _cpuTemp);
-                        int gpuSpeed = InterpolateCurve(_gpuCurvePoints, _gpuTemp);
+                        int cpuSpeed = InterpolateCurve(ActiveCpuCurve, _cpuTemp);
+                        int gpuSpeed = InterpolateCurve(ActiveGpuCurve, _gpuTemp);
                         _wmi.SetCpuFanSpeed((byte)cpuSpeed);
                         _wmi.SetGpuFanSpeed((byte)gpuSpeed);
                         _lastCurveCpuSpeed = cpuSpeed;
@@ -1607,6 +1668,10 @@ namespace PredatorControlApp
                 finally { _isPluggedIn = confirmed; }
             }
 
+            // On battery, don't wake a sleeping dGPU just to read its temperature
+            _wmi.AllowGpuDriverQuery = _isPluggedIn != false;
+            // Only boost to Performance for detected games while plugged in
+            _gameSync.AutoBoostAllowed = _isPluggedIn == true;
             _cpuTemp = _wmi.CpuTemp;
             _gpuTemp = _wmi.GpuTemp;
 
@@ -1646,8 +1711,11 @@ namespace PredatorControlApp
             if (GetCurrentFanByte() != 0x03) return;  
             if (_cpuTemp <= 0 && _gpuTemp <= 0) return; 
 
-            int cpuSpeed = InterpolateCurve(_cpuCurvePoints, _cpuTemp);
-            int gpuSpeed = InterpolateCurve(_gpuCurvePoints, _gpuTemp);
+            // The CPU and GPU share heatpipes, so if the GPU temperature is unreadable
+            // follow the CPU rather than parking the GPU fan at the bottom of its curve
+            int gpuTemp = _gpuTemp > 0 ? _gpuTemp : _cpuTemp;
+            int cpuSpeed = CurveSpeed(ActiveCpuCurve, _cpuTemp, _lastCurveCpuSpeed);
+            int gpuSpeed = CurveSpeed(ActiveGpuCurve, gpuTemp, _lastCurveGpuSpeed);
 
             if (cpuSpeed != _lastCurveCpuSpeed)
             {
@@ -1668,7 +1736,14 @@ namespace PredatorControlApp
             }
         }
 
-        private static int InterpolateCurve(List<Point> curve, int temp)
+        internal static int CurveSpeed(List<Point> curve, int temp, int lastSpeed)
+        {
+            int target = InterpolateCurve(curve, temp);
+            if (lastSpeed < 0 || target >= lastSpeed) return target;
+            return Math.Min(lastSpeed, InterpolateCurve(curve, temp + CurveHysteresis));
+        }
+
+        internal static int InterpolateCurve(List<Point> curve, int temp)
         {
             if (curve.Count == 0) return 50;
             if (temp <= curve[0].X) return curve[0].Y;
@@ -1811,6 +1886,119 @@ namespace PredatorControlApp
 
         private void HideApp() => this.Hide();
 
+        #region PredatorSense Key
+
+        private void UpdatePredatorKeyHook()
+        {
+            bool learning = _learnTimeout != null;
+            if (_cboPredatorKey.SelectedIndex == KeyActionNothing && !learning)
+                _predatorKey.Stop();
+            else
+                _predatorKey.Start();
+        }
+
+        private void UpdateLearnKeyText()
+        {
+            _btnLearnKey.Text = $"⌨  Set Key  (current: {PredatorKeyHook.Describe(_predatorKey.ScanCode, _predatorKey.Extended)})";
+        }
+
+        private void StartLearningKey()
+        {
+            _learnTimeout?.Dispose();
+            _learnTimeout = new System.Windows.Forms.Timer { Interval = 10000 };
+            _learnTimeout.Tick += (s, e) =>
+            {
+                _predatorKey.CancelLearn();
+                StopLearnTimeout();
+                UpdateLearnKeyText();
+                UpdatePredatorKeyHook();
+                MessageBox.Show(this,
+                    "No key press was seen. If the PredatorSense key doesn't register here, your model sends it in a way this app can't catch yet.",
+                    "Set PredatorSense Key", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            };
+            _learnTimeout.Start();
+            _btnLearnKey.Text = "Press the PredatorSense key now…";
+            _predatorKey.Learn();
+            UpdatePredatorKeyHook();
+        }
+
+        private void StopLearnTimeout()
+        {
+            _learnTimeout?.Stop();
+            _learnTimeout?.Dispose();
+            _learnTimeout = null;
+        }
+
+        private void OnPredatorKeyLearned(int scanCode, bool extended)
+        {
+            StopLearnTimeout();
+            SaveState("PKeyScan", scanCode);
+            SaveState("PKeyExt", extended ? 1 : 0);
+            UpdateLearnKeyText();
+            UpdatePredatorKeyHook();
+        }
+
+        private void OnPredatorKey()
+        {
+            switch (_cboPredatorKey.SelectedIndex)
+            {
+                case KeyActionOpenApp:
+                    ShowApp();
+                    break;
+
+                case KeyActionCycleModes:
+                {
+                    byte next = GetCurrentPowerByte() switch
+                    {
+                        0x00 => 0x01,
+                        0x01 => _btnPerform.Enabled ? (byte)0x04 : (byte)0x00,
+                        _ => 0x00
+                    };
+                    ApplyPowerMode(next, PowerByteToBtn(next));
+                    NotifyPowerMode(next);
+                    break;
+                }
+
+                case KeyActionToggleTurbo:
+                {
+                    byte current = GetCurrentPowerByte();
+                    byte next = current == 0x05 ? _lastNonTurboPower : (byte)0x05;
+                    if (next == 0x05 && !_btnTurbo.Enabled) return;
+                    if (current != 0x05) _lastNonTurboPower = current;
+                    ApplyPowerMode(next, PowerByteToBtn(next));
+                    NotifyPowerMode(next);
+                    break;
+                }
+            }
+        }
+
+        private void NotifyPowerMode(byte mode)
+        {
+            string name = mode switch
+            {
+                0x00 => "Quiet",
+                0x04 => "Performance",
+                0x05 => "Turbo",
+                0x06 => "Eco",
+                _ => "Balanced"
+            };
+            try { _trayIcon.ShowBalloonTip(1500, "Predator Control", $"Power mode: {name}", ToolTipIcon.None); } catch { }
+        }
+
+        #endregion
+
+        // Once the app stops, nothing keeps the curve updated, so the fans would stay
+        // at whatever speed was last applied. Hand them back to the firmware instead.
+        internal void RestoreFansIfCurveActive()
+        {
+            try
+            {
+                if (_fanCurveEnabled && GetCurrentFanByte() == 0x03)
+                    _wmi.RestoreAutoFans();
+            }
+            catch { }
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (!_isClosing)
@@ -1822,6 +2010,8 @@ namespace PredatorControlApp
             {
                 _trayIcon.Visible = false;
                 _timer.Stop();
+                _predatorKey.Dispose();
+                RestoreFansIfCurveActive();
                 _gameSync.Dispose();
                 _appMutex?.Dispose();
                 base.OnFormClosing(e);

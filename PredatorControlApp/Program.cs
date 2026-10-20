@@ -5,6 +5,8 @@ namespace PredatorControlApp
         private static readonly HashSet<string> _reported = new();
         private static bool _dialogOpen;
 
+        internal static Action? EmergencyRestore;
+
         private static string LogPath
         {
             get
@@ -17,6 +19,11 @@ namespace PredatorControlApp
 
         internal static void Report(Exception ex, bool fatal)
         {
+            if (fatal)
+            {
+                try { EmergencyRestore?.Invoke(); } catch { }
+            }
+
             string key = $"{ex.GetType().FullName}|{ex.StackTrace}";
 
             try

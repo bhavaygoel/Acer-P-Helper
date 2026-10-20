@@ -956,6 +956,9 @@ namespace PredatorControlApp
         private void ApplyPowerMode(byte mode, PredatorButton btn)
         {
             _wmi.SetPowerMode(mode);
+            // Power changes can rewrite fan speeds, so let the curve re-send its values
+            _lastCurveCpuSpeed = -1;
+            _lastCurveGpuSpeed = -1;
             HighlightBtn(btn, ref _activePowerBtn);
             SaveState("Power", mode);
 

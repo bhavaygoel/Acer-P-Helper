@@ -26,7 +26,6 @@ namespace PredatorControlApp
         private byte _customCpuFanSpeed = 50;
         private byte _customGpuFanSpeed = 50;
         private byte _lastFanMode = 0x01;
-        private bool? _legacyTurboOn;
 
         /// <summary>
         /// When false, the NVML fallback for GPU temperature is skipped so the dGPU can stay asleep.
@@ -156,34 +155,29 @@ namespace PredatorControlApp
         public void SetPowerMode(byte mode)
         {
             if (UsesLegacyTurbo)
-                SetLegacyTurbo(mode == 0x05);
+                SetLegacyPowerLevel(mode);
             else
                 SendCommand("SetGamingMiscSetting", (ulong)0x0B | ((ulong)mode << 8));
             SyncWindowsPowerMode(mode);
         }
 
-        // Same sequence the PH315-53 turbo key triggers (verified by rawPSense), minus PredatorSense's battery check.
-        private void SetLegacyTurbo(bool on)
+        // The PH315-53 turbo key sends LED, fan and CPU/GPU overclock calls (verified by rawPSense).
+        // Turbo (0x05) does all of it; Performance (0x04) raises the same limits but leaves the fans
+        // on whatever the user picked; anything else drops back to stock limits.
+        private void SetLegacyPowerLevel(byte mode)
         {
-            _legacyTurboOn ??= IsLegacyTurboOn();
-            if (_legacyTurboOn == on) return;
+            bool turbo = mode == 0x05;
+            bool raiseLimits = turbo || mode == 0x04;
 
-            SendCommand("SetGamingLED", on ? 0x10001UL : 0x1UL);
-            SendCommand("SetGamingFanBehavior", on ? 0x820009UL : 0x410009UL);
-            // CPU/GPU overclock levels; these return the applied level rather than a status code
-            SendCommand("SetGamingMiscSetting", on ? 0x205UL : 0x5UL);
-            SendCommand("SetGamingMiscSetting", on ? 0x207UL : 0x7UL);
-            _legacyTurboOn = on;
+            SendCommand("SetGamingLED", turbo ? 0x10001UL : 0x1UL);
+            // These return the applied level rather than a status code
+            SendCommand("SetGamingMiscSetting", raiseLimits ? 0x205UL : 0x5UL);
+            SendCommand("SetGamingMiscSetting", raiseLimits ? 0x207UL : 0x7UL);
 
-            // Leaving turbo resets both fans to auto; put back what the user had picked
-            if (!on && _lastFanMode != 0x01)
+            if (turbo)
+                SendCommand("SetGamingFanBehavior", 0x820009UL);
+            else
                 SetFanBehavior(_lastFanMode);
-        }
-
-        private bool IsLegacyTurboOn()
-        {
-            var (ok, output) = SendCommand("GetGamingLED", 0x1UL);
-            return ok && ((output >> 8) & 0xFF) != 0;
         }
 
         /// <summary>Hands both fans back to the firmware's automatic control.</summary>

@@ -1254,9 +1254,10 @@ namespace PredatorControlApp
             _gameSync.SetPreGameSnapshot(CaptureCurrentState());
 
             ApplyPowerMode(profile.PowerMode, PowerByteToBtn(profile.PowerMode));
-            ApplyFanMode(profile.FanMode, FanByteToBtn(profile.FanMode));
+            if (!profile.KeepFans)
+                ApplyFanMode(profile.FanMode, FanByteToBtn(profile.FanMode));
 
-            if (profile.FanMode == 0x03)
+            if (!profile.KeepFans && profile.FanMode == 0x03)
             {
                 _fanCurveEnabled = false;
                 HighlightBtn(_btnFixedSpeed, ref _activeCustomSubBtn);
@@ -1618,6 +1619,8 @@ namespace PredatorControlApp
 
             // On battery, don't wake a sleeping dGPU just to read its temperature
             _wmi.AllowGpuDriverQuery = _isPluggedIn != false;
+            // Only boost to Performance for detected games while plugged in
+            _gameSync.AutoBoostAllowed = _isPluggedIn == true;
             _cpuTemp = _wmi.CpuTemp;
             _gpuTemp = _wmi.GpuTemp;
 

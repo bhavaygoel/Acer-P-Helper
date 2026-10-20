@@ -7,6 +7,11 @@ namespace PredatorControlApp
 
         public byte PowerMode { get; set; } = 0x01;      
         public byte FanMode { get; set; } = 0x01;         
+
+        // Set on profiles made by automatic game detection: only the power mode changes
+        // and the user's fan mode or curve is left alone.
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool KeepFans { get; set; }
         public int CpuFanSpeed { get; set; } = -1;         
         public int GpuFanSpeed { get; set; } = -1;
 

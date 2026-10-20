@@ -31,6 +31,10 @@ namespace PredatorControlApp
             CheckPowerLineDebounce();
             CheckCurveHysteresis();
 
+            Debug.Assert(GameDetector.IsInGameLibrary(@"D:\SteamLibrary\steamapps\common\Cyberpunk 2077\bin\x64\Cyberpunk2077.exe", "Cyberpunk2077"), "Steam game must be detected");
+            Debug.Assert(!GameDetector.IsInGameLibrary(@"C:\Program Files\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe", "EpicGamesLauncher"), "launchers must not count as games");
+            Debug.Assert(!GameDetector.IsInGameLibrary(@"C:\Program Files\Notepad++\notepad++.exe", "notepad++"), "apps outside game libraries need another signal");
+
             foreach (var preset in new[] { FanCurveForm.QuietCpu, FanCurveForm.QuietGpu, FanCurveForm.GamingCpu, FanCurveForm.GamingGpu })
                 Debug.Assert(FanCurveGraph.Normalize(preset).SequenceEqual(preset), "presets must already be normalized");
         }

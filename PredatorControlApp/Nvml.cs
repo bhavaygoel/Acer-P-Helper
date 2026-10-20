@@ -21,6 +21,12 @@ namespace PredatorControlApp
         [DllImport(Lib, EntryPoint = "nvmlDeviceGetTemperature")]
         private static extern int GetTemperature(IntPtr device, int sensor, out uint temp);
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Utilization { public uint Gpu, Memory; }
+
+        [DllImport(Lib, EntryPoint = "nvmlDeviceGetUtilizationRates")]
+        private static extern int GetUtilizationRates(IntPtr device, out Utilization util);
+
         private static readonly object _lock = new();
         private static bool _tried;
         private static IntPtr _device;
@@ -30,20 +36,7 @@ namespace PredatorControlApp
         {
             lock (_lock)
             {
-                if (!_tried)
-                {
-                    _tried = true;
-                    try
-                    {
-                        if (Init() == 0 && GetHandleByIndex(0, out var dev) == 0)
-                            _device = dev;
-                    }
-                    catch (DllNotFoundException) { }
-                    catch (EntryPointNotFoundException) { }
-                }
-
-                if (_device == IntPtr.Zero) return -1;
-
+                if (!EnsureDevice()) return -1;
                 try
                 {
                     return GetTemperature(_device, NVML_TEMPERATURE_GPU, out uint t) == 0 ? (int)t : -1;
@@ -53,6 +46,40 @@ namespace PredatorControlApp
                     return -1;
                 }
             }
+        }
+
+        /// <summary>GPU core load in percent, or -1 if NVML is unavailable.</summary>
+        public static int GpuUtilization()
+        {
+            lock (_lock)
+            {
+                if (!EnsureDevice()) return -1;
+                try
+                {
+                    return GetUtilizationRates(_device, out var u) == 0 ? (int)u.Gpu : -1;
+                }
+                catch
+                {
+                    return -1;
+                }
+            }
+        }
+
+        private static bool EnsureDevice()
+        {
+            if (!_tried)
+            {
+                _tried = true;
+                try
+                {
+                    if (Init() == 0 && GetHandleByIndex(0, out var dev) == 0)
+                        _device = dev;
+                }
+                catch (DllNotFoundException) { }
+                catch (EntryPointNotFoundException) { }
+            }
+
+            return _device != IntPtr.Zero;
         }
     }
 }

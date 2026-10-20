@@ -14,7 +14,19 @@ namespace PredatorControlApp
         private bool _enabled;
         private bool _polling;
         private string? _activeExe;
+        private int _autoPid;
+        private int _autoCandidatePid;
         private DashboardSnapshot? _savedSnapshot;    
+
+        // Automatic detection needs the game in front for two polls in a row before boosting
+        private const int AutoConfirmPolls = 2;
+        private int _autoConfirmCount;
+
+        /// <summary>Boost to Performance for any detected game that has no profile of its own.</summary>
+        public bool AutoDetect { get; set; } = true;
+
+        /// <summary>Set by the host; automatic boosting only happens while this is true (e.g. on AC).</summary>
+        public bool AutoBoostAllowed { get; set; } = true;
 
         public event Action<GameProfile>? GameDetected;
 
@@ -41,6 +53,8 @@ namespace PredatorControlApp
                             _activeExe = null;
                             _savedSnapshot = null;
                         }
+                        _autoPid = 0;
+                        _autoConfirmCount = 0;
                     }
                     EnabledChanged?.Invoke(_enabled);
                     Save();
@@ -142,11 +156,25 @@ namespace PredatorControlApp
 
         private async void PollProcesses(object? sender, EventArgs e)
         {
-            if (!_enabled || _profiles.Count == 0 || _polling) return;
+            if (!_enabled || _polling) return;
+            if (_profiles.Count == 0 && !AutoDetect) return;
             _polling = true;
             try
             {
-                if (_activeExe != null)
+                if (_autoPid != 0)
+                {
+                    int pid = _autoPid;
+                    if (!await Task.Run(() => GameDetector.IsRunning(pid)))
+                    {
+                        var snapshot = _savedSnapshot;
+                        _activeExe = null;
+                        _autoPid = 0;
+                        _savedSnapshot = null;
+                        if (snapshot != null)
+                            GameExited?.Invoke(snapshot);
+                    }
+                }
+                else if (_activeExe != null)
                 {
                     string nameWithoutExe = Path.GetFileNameWithoutExtension(_activeExe);
                     bool stillRunning = await Task.Run(() => IsProcessActive(nameWithoutExe));
@@ -172,12 +200,43 @@ namespace PredatorControlApp
                             break;
                         }
                     }
+
+                    if (_activeExe == null && AutoDetect && AutoBoostAllowed)
+                        await PollAutoDetect();
                 }
             }
             finally
             {
                 _polling = false;
             }
+        }
+
+        private async Task PollAutoDetect()
+        {
+            var game = await Task.Run(GameDetector.DetectForegroundGame);
+            if (game == null)
+            {
+                _autoConfirmCount = 0;
+                return;
+            }
+
+            if (game.Value.Pid != _autoCandidatePid)
+            {
+                _autoCandidatePid = game.Value.Pid;
+                _autoConfirmCount = 0;
+            }
+            if (++_autoConfirmCount < AutoConfirmPolls) return;
+
+            _autoConfirmCount = 0;
+            _autoPid = game.Value.Pid;
+            _activeExe = Path.GetFileName(game.Value.Path);
+            GameDetected?.Invoke(new GameProfile
+            {
+                ExecutableName = _activeExe,
+                DisplayName = game.Value.Name,
+                PowerMode = 0x04,
+                KeepFans = true,
+            });
         }
 
         #region Persistence
@@ -189,6 +248,7 @@ namespace PredatorControlApp
                 var data = new GameSyncData
                 {
                     Enabled = _enabled,
+                    AutoDetect = AutoDetect,
                     Profiles = _profiles
                 };
                 var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
@@ -207,6 +267,7 @@ namespace PredatorControlApp
                 if (data != null)
                 {
                     _enabled = data.Enabled;
+                    AutoDetect = data.AutoDetect ?? true;
                     _profiles.Clear();
                     if (data.Profiles != null)
                         _profiles.AddRange(data.Profiles);
@@ -218,6 +279,7 @@ namespace PredatorControlApp
         private class GameSyncData
         {
             public bool Enabled { get; set; }
+            public bool? AutoDetect { get; set; }
             public List<GameProfile>? Profiles { get; set; }
         }
 

@@ -160,6 +160,13 @@ namespace PredatorControlApp
         private bool _fanCurveEnabled;
         private List<Point> _cpuCurvePoints = new() { new(30,10), new(45,15), new(55,30), new(65,50), new(72,65), new(80,80), new(88,92), new(95,100) };
         private List<Point> _gpuCurvePoints = new() { new(30,10), new(45,15), new(55,30), new(65,50), new(72,65), new(80,80), new(88,92), new(95,100) };
+        private List<Point> _cpuPerfCurvePoints = new(FanCurveForm.GamingCpu);
+        private List<Point> _gpuPerfCurvePoints = new(FanCurveForm.GamingGpu);
+
+        // Performance mode has its own curve set; Quiet, Balanced and Eco share the everyday one
+        private bool UsingPerfCurve => GetCurrentPowerByte() == 0x04;
+        private List<Point> ActiveCpuCurve => UsingPerfCurve ? _cpuPerfCurvePoints : _cpuCurvePoints;
+        private List<Point> ActiveGpuCurve => UsingPerfCurve ? _gpuPerfCurvePoints : _gpuCurvePoints;
         private int _lastCurveCpuSpeed = -1;
         private int _lastCurveGpuSpeed = -1;
 
@@ -1047,17 +1054,18 @@ namespace PredatorControlApp
             }
 
             _fanCurveForm = new FanCurveForm();
-            _fanCurveForm.SetCpuCurve(_cpuCurvePoints);
-            _fanCurveForm.SetGpuCurve(_gpuCurvePoints);
+            _fanCurveForm.SetCurves(_cpuCurvePoints, _gpuCurvePoints, _cpuPerfCurvePoints, _gpuPerfCurvePoints, UsingPerfCurve);
             _fanCurveForm.UpdateTemps(_cpuTemp, _gpuTemp);
 
             _fanCurveForm.ApplyClicked += (s, args) =>
             {
                 _cpuCurvePoints = args.CpuPoints;
                 _gpuCurvePoints = args.GpuPoints;
+                _cpuPerfCurvePoints = args.PerfCpuPoints;
+                _gpuPerfCurvePoints = args.PerfGpuPoints;
 
-                int cpuSpeed = _fanCurveForm!.InterpolateCpuSpeed(_cpuTemp);
-                int gpuSpeed = _fanCurveForm!.InterpolateGpuSpeed(_gpuTemp);
+                int cpuSpeed = InterpolateCurve(ActiveCpuCurve, _cpuTemp);
+                int gpuSpeed = InterpolateCurve(ActiveGpuCurve, _gpuTemp > 0 ? _gpuTemp : _cpuTemp);
 
                 bool cpuOk = _wmi.SetCpuFanSpeed((byte)cpuSpeed);
                 bool gpuOk = _wmi.SetGpuFanSpeed((byte)gpuSpeed);
@@ -1077,6 +1085,8 @@ namespace PredatorControlApp
 
                     SaveCurveToRegistry("CpuCurve", _cpuCurvePoints);
                     SaveCurveToRegistry("GpuCurve", _gpuCurvePoints);
+                    SaveCurveToRegistry("CpuCurvePerf", _cpuPerfCurvePoints);
+                    SaveCurveToRegistry("GpuCurvePerf", _gpuPerfCurvePoints);
                     SaveState("FanCurveEnabled", 1);
                 }
             };
@@ -1459,6 +1469,10 @@ namespace PredatorControlApp
                 var loadedGpu = LoadCurveFromRegistry("GpuCurve");
                 if (loadedCpu != null) _cpuCurvePoints = loadedCpu;
                 if (loadedGpu != null) _gpuCurvePoints = loadedGpu;
+                var loadedPerfCpu = LoadCurveFromRegistry("CpuCurvePerf");
+                var loadedPerfGpu = LoadCurveFromRegistry("GpuCurvePerf");
+                if (loadedPerfCpu != null) _cpuPerfCurvePoints = loadedPerfCpu;
+                if (loadedPerfGpu != null) _gpuPerfCurvePoints = loadedPerfGpu;
 
                 int savedCurveEnabled = GetInt(key, "FanCurveEnabled", 0, 0, 1);
                 if (savedCurveEnabled == 1 && fanMode == 0x03)
@@ -1470,8 +1484,8 @@ namespace PredatorControlApp
                 {
                     if (_fanCurveEnabled)
                     {
-                        int cpuSpeed = InterpolateCurve(_cpuCurvePoints, _cpuTemp);
-                        int gpuSpeed = InterpolateCurve(_gpuCurvePoints, _gpuTemp);
+                        int cpuSpeed = InterpolateCurve(ActiveCpuCurve, _cpuTemp);
+                        int gpuSpeed = InterpolateCurve(ActiveGpuCurve, _gpuTemp);
                         _wmi.SetCpuFanSpeed((byte)cpuSpeed);
                         _wmi.SetGpuFanSpeed((byte)gpuSpeed);
                         _lastCurveCpuSpeed = cpuSpeed;
@@ -1663,8 +1677,8 @@ namespace PredatorControlApp
             // The CPU and GPU share heatpipes, so if the GPU temperature is unreadable
             // follow the CPU rather than parking the GPU fan at the bottom of its curve
             int gpuTemp = _gpuTemp > 0 ? _gpuTemp : _cpuTemp;
-            int cpuSpeed = CurveSpeed(_cpuCurvePoints, _cpuTemp, _lastCurveCpuSpeed);
-            int gpuSpeed = CurveSpeed(_gpuCurvePoints, gpuTemp, _lastCurveGpuSpeed);
+            int cpuSpeed = CurveSpeed(ActiveCpuCurve, _cpuTemp, _lastCurveCpuSpeed);
+            int gpuSpeed = CurveSpeed(ActiveGpuCurve, gpuTemp, _lastCurveGpuSpeed);
 
             if (cpuSpeed != _lastCurveCpuSpeed)
             {

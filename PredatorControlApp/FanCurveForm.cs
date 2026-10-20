@@ -9,6 +9,8 @@ namespace PredatorControlApp
     {
         public List<Point> CpuPoints { get; set; } = new();
         public List<Point> GpuPoints { get; set; } = new();
+        public List<Point> PerfCpuPoints { get; set; } = new();
+        public List<Point> PerfGpuPoints { get; set; } = new();
         public bool Success { get; set; }
     }
 
@@ -38,6 +40,15 @@ namespace PredatorControlApp
         private FanCurveGraph _graphCpu = null!;
         private FanCurveGraph _graphGpu = null!;
         private PredatorButton _btnReset = null!;
+        private PredatorButton _btnEveryday = null!;
+        private PredatorButton _btnPerformance = null!;
+
+        // Two curve sets: Everyday (Quiet/Balanced/Eco) and Performance (Perf mode).
+        // The graphs show whichever set is selected; the other set is kept here.
+        private readonly List<Point>[] _cpuSets = { new(), new() };
+        private readonly List<Point>[] _gpuSets = { new(), new() };
+        private int _set;
+        private const int ProfileRowHeight = 48;
         private PredatorButton _btnQuiet = null!;
         private PredatorButton _btnGaming = null!;
         private PredatorButton _btnApply = null!;
@@ -103,6 +114,7 @@ namespace PredatorControlApp
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
             int totalHeight = TitleBarHeight + SepHeight
+                            + ProfileRowHeight + SepHeight
                             + GraphHeight + SepHeight
                             + GraphHeight + SepHeight
                             + ButtonRowHeight;
@@ -163,6 +175,31 @@ namespace PredatorControlApp
             pnlTitle.Controls.Add(lblClose);
 
             y = TitleBarHeight;
+
+            Controls.Add(MakeSeparator(y));
+            y += SepHeight;
+
+            int tabW = (ClientSize.Width - SidePad * 2 - 12) / 2;
+            int tabH = 32;
+            int tabY = y + (ProfileRowHeight - tabH) / 2;
+            _btnEveryday = new PredatorButton
+            {
+                Text = "Everyday (Quiet / Balanced)",
+                Size = new Size(tabW, tabH),
+                Location = new Point(SidePad, tabY)
+            };
+            _btnEveryday.Click += (s, e) => SelectSet(0);
+            Controls.Add(_btnEveryday);
+
+            _btnPerformance = new PredatorButton
+            {
+                Text = "Performance (Perf)",
+                Size = new Size(tabW, tabH),
+                Location = new Point(_btnEveryday.Right + 12, tabY)
+            };
+            _btnPerformance.Click += (s, e) => SelectSet(1);
+            Controls.Add(_btnPerformance);
+            y += ProfileRowHeight;
 
             Controls.Add(MakeSeparator(y));
             y += SepHeight;
@@ -251,8 +288,24 @@ namespace PredatorControlApp
 
         private void BtnReset_Click(object? sender, EventArgs e)
         {
-            _graphCpu.Points = _graphCpu.DefaultPoints;
-            _graphGpu.Points = _graphGpu.DefaultPoints;
+            if (_set == 1)
+                LoadPreset(GamingCpu, GamingGpu);
+            else
+            {
+                _graphCpu.Points = _graphCpu.DefaultPoints;
+                _graphGpu.Points = _graphGpu.DefaultPoints;
+            }
+        }
+
+        private void SelectSet(int set)
+        {
+            _cpuSets[_set] = new List<Point>(_graphCpu.Points);
+            _gpuSets[_set] = new List<Point>(_graphGpu.Points);
+            _set = set;
+            _graphCpu.Points = new List<Point>(_cpuSets[set]);
+            _graphGpu.Points = new List<Point>(_gpuSets[set]);
+            _btnEveryday.IsActive = set == 0;
+            _btnPerformance.IsActive = set == 1;
         }
 
         // Loads the preset into the editor; it takes effect once the user presses Apply
@@ -264,10 +317,14 @@ namespace PredatorControlApp
 
         private void BtnApply_Click(object? sender, EventArgs e)
         {
+            _cpuSets[_set] = new List<Point>(_graphCpu.Points);
+            _gpuSets[_set] = new List<Point>(_graphGpu.Points);
             var args = new FanCurveApplyEventArgs
             {
-                CpuPoints = new List<Point>(_graphCpu.Points),
-                GpuPoints = new List<Point>(_graphGpu.Points),
+                CpuPoints = new List<Point>(_cpuSets[0]),
+                GpuPoints = new List<Point>(_gpuSets[0]),
+                PerfCpuPoints = new List<Point>(_cpuSets[1]),
+                PerfGpuPoints = new List<Point>(_gpuSets[1]),
                 Success = false
             };
 
@@ -306,6 +363,20 @@ namespace PredatorControlApp
         public void SetGpuCurve(List<Point> points)
         {
             _graphGpu.Points = new List<Point>(points);
+        }
+
+        /// <summary>Loads both curve sets and shows the one in use right now.</summary>
+        public void SetCurves(List<Point> cpu, List<Point> gpu, List<Point> perfCpu, List<Point> perfGpu, bool showPerformance)
+        {
+            _cpuSets[0] = new List<Point>(cpu);
+            _gpuSets[0] = new List<Point>(gpu);
+            _cpuSets[1] = new List<Point>(perfCpu);
+            _gpuSets[1] = new List<Point>(perfGpu);
+            _set = showPerformance ? 1 : 0;
+            _graphCpu.Points = new List<Point>(_cpuSets[_set]);
+            _graphGpu.Points = new List<Point>(_gpuSets[_set]);
+            _btnEveryday.IsActive = _set == 0;
+            _btnPerformance.IsActive = _set == 1;
         }
 
         public List<Point> GetCpuCurve() => new(_graphCpu.Points);

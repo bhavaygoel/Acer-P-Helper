@@ -126,6 +126,17 @@ If you want to fully remove it:
 
 ---
 
+## Helios 300 (PH315-53) notes
+
+This model is detected automatically and handled differently:
+
+- **Turbo** uses the PH315-53's own turbo sequence (LED, fans, CPU/GPU overclock level), since this firmware has no Quiet/Balanced/Performance modes. The other power buttons turn Turbo off and only switch the Windows power overlay.
+- **GPU temperature** falls back to the NVIDIA driver (NVML) when the EC reports 0, which it does with recent NVIDIA drivers. On battery the fallback is skipped so the dGPU can sleep, and the GPU fan curve follows the CPU temperature instead.
+- **Fan curves** spin up immediately but only spin down after a 4°C drop, so the fans don't hunt.
+- **Closing or crashing** with a fan curve active hands the fans back to BIOS auto, so they never stay stuck at a low speed.
+
+The WMI values for this model come from [rawPSense](https://github.com/joserodpt/rawPSense), which verified them on a PH315-53.
+
 ## How It Works
 
 The app talks directly to the `AcerGamingFunction` WMI class in the `root\WMI` namespace — the same low-level interface PredatorSense uses under the hood. No Acer background services are required.

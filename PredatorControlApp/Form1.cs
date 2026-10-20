@@ -162,6 +162,10 @@ namespace PredatorControlApp
         private List<Point> _gpuCurvePoints = new() { new(30,10), new(45,15), new(55,30), new(65,50), new(72,65), new(80,80), new(88,92), new(95,100) };
         private int _lastCurveCpuSpeed = -1;
         private int _lastCurveGpuSpeed = -1;
+
+        // Fans spin up as soon as the curve asks, but only spin down once the temperature
+        // has dropped this many degrees, so they don't hunt around a curve point.
+        internal const int CurveHysteresis = 4;
         
         private PredatorButton? _activePowerBtn, _activeFanBtn, _activeDisplayBtn;
         private bool _isUpdatingBattery;
@@ -255,6 +259,8 @@ namespace PredatorControlApp
                 _switchGameSync.Checked = true;
                 _lblGameSyncStatus.Text = "Active \u2014 Monitoring";
             }
+
+            Program.EmergencyRestore = RestoreFansIfCurveActive;
 
             _timer.Interval = 2000;
             _timer.Tick += UpdateTelemetry;
@@ -1607,6 +1613,8 @@ namespace PredatorControlApp
                 finally { _isPluggedIn = confirmed; }
             }
 
+            // On battery, don't wake a sleeping dGPU just to read its temperature
+            _wmi.AllowGpuDriverQuery = _isPluggedIn != false;
             _cpuTemp = _wmi.CpuTemp;
             _gpuTemp = _wmi.GpuTemp;
 
@@ -1646,8 +1654,11 @@ namespace PredatorControlApp
             if (GetCurrentFanByte() != 0x03) return;  
             if (_cpuTemp <= 0 && _gpuTemp <= 0) return; 
 
-            int cpuSpeed = InterpolateCurve(_cpuCurvePoints, _cpuTemp);
-            int gpuSpeed = InterpolateCurve(_gpuCurvePoints, _gpuTemp);
+            // The CPU and GPU share heatpipes, so if the GPU temperature is unreadable
+            // follow the CPU rather than parking the GPU fan at the bottom of its curve
+            int gpuTemp = _gpuTemp > 0 ? _gpuTemp : _cpuTemp;
+            int cpuSpeed = CurveSpeed(_cpuCurvePoints, _cpuTemp, _lastCurveCpuSpeed);
+            int gpuSpeed = CurveSpeed(_gpuCurvePoints, gpuTemp, _lastCurveGpuSpeed);
 
             if (cpuSpeed != _lastCurveCpuSpeed)
             {
@@ -1668,7 +1679,14 @@ namespace PredatorControlApp
             }
         }
 
-        private static int InterpolateCurve(List<Point> curve, int temp)
+        internal static int CurveSpeed(List<Point> curve, int temp, int lastSpeed)
+        {
+            int target = InterpolateCurve(curve, temp);
+            if (lastSpeed < 0 || target >= lastSpeed) return target;
+            return Math.Min(lastSpeed, InterpolateCurve(curve, temp + CurveHysteresis));
+        }
+
+        internal static int InterpolateCurve(List<Point> curve, int temp)
         {
             if (curve.Count == 0) return 50;
             if (temp <= curve[0].X) return curve[0].Y;
@@ -1811,6 +1829,18 @@ namespace PredatorControlApp
 
         private void HideApp() => this.Hide();
 
+        // Once the app stops, nothing keeps the curve updated, so the fans would stay
+        // at whatever speed was last applied. Hand them back to the firmware instead.
+        internal void RestoreFansIfCurveActive()
+        {
+            try
+            {
+                if (_fanCurveEnabled && GetCurrentFanByte() == 0x03)
+                    _wmi.RestoreAutoFans();
+            }
+            catch { }
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (!_isClosing)
@@ -1822,6 +1852,7 @@ namespace PredatorControlApp
             {
                 _trayIcon.Visible = false;
                 _timer.Stop();
+                RestoreFansIfCurveActive();
                 _gameSync.Dispose();
                 _appMutex?.Dispose();
                 base.OnFormClosing(e);

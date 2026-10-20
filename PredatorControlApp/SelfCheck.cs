@@ -29,6 +29,16 @@ namespace PredatorControlApp
             Debug.Assert(Form1.AcProfileValues[4] == 0x05, "AC Turbo must map to 0x05");
 
             CheckPowerLineDebounce();
+            CheckCurveHysteresis();
+        }
+
+        private static void CheckCurveHysteresis()
+        {
+            var curve = new List<Point> { new(40, 20), new(80, 100) };
+            Debug.Assert(Form1.CurveSpeed(curve, 60, -1) == 60, "first sample uses the curve directly");
+            Debug.Assert(Form1.CurveSpeed(curve, 70, 60) == 80, "rising temps spin up immediately");
+            Debug.Assert(Form1.CurveSpeed(curve, 68, 80) == 80, "a small drop must not spin down");
+            Debug.Assert(Form1.CurveSpeed(curve, 60, 80) == 68, "a large drop spins down, minus the hysteresis");
         }
 
         private static void CheckPowerLineDebounce()

@@ -25,6 +25,36 @@ namespace PredatorControlApp
 
         private byte _customCpuFanSpeed = 50;
         private byte _customGpuFanSpeed = 50;
+        private byte _lastFanMode = 0x01;
+        private bool? _legacyTurboOn;
+
+        /// <summary>
+        /// When false, the NVML fallback for GPU temperature is skipped so the dGPU can stay asleep.
+        /// </summary>
+        public bool AllowGpuDriverQuery { get; set; } = true;
+
+        private static readonly Lazy<string> _model = new(ReadModel);
+        public static string Model => _model.Value;
+
+        /// <summary>
+        /// The 2020 Helios 300 (PH315-53) has no Quiet/Balanced/Performance modes in firmware;
+        /// it only has Turbo, which is a fixed sequence of LED, fan and GPU overclock calls.
+        /// </summary>
+        public static bool UsesLegacyTurbo => Model.Contains("PH315-53", StringComparison.OrdinalIgnoreCase);
+
+        private static string ReadModel()
+        {
+            try
+            {
+                using var searcher = new ManagementObjectSearcher(@"root\CIMV2", "SELECT Model FROM Win32_ComputerSystem");
+                using var results = searcher.Get();
+                return results.Cast<ManagementObject>().FirstOrDefault()?["Model"]?.ToString()?.Trim() ?? "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
 
         public byte LastR => _lastR;
         public byte LastG => _lastG;
@@ -103,7 +133,8 @@ namespace PredatorControlApp
             }
         }
 
-        private int GetSensorReading(ulong sensorId)
+        // Status is in bits 0-7; temperatures use bits 8-15 and fan RPM bits 8-23.
+        private int GetSensorReading(ulong sensorId, ulong mask = 0xFFFF)
         {
             try
             {
@@ -114,7 +145,7 @@ namespace PredatorControlApp
                 inParams["gmInput"] = (ulong)(0x0001 | (sensorId << 8));
                 using var outParams = obj.InvokeMethod("GetGamingSysInfo", inParams, null);
                 ulong raw = Convert.ToUInt64(outParams["gmOutput"]);
-                if ((raw & 0xFF) == 0) return (int)((raw >> 8) & 0xFFFF);
+                if ((raw & 0xFF) == 0) return (int)((raw >> 8) & mask);
             }
             catch (ManagementException) { InvalidateCache(); }
             catch (COMException) { InvalidateCache(); }
@@ -124,12 +155,46 @@ namespace PredatorControlApp
 
         public void SetPowerMode(byte mode)
         {
-            SendCommand("SetGamingMiscSetting", (ulong)0x0B | ((ulong)mode << 8));
+            if (UsesLegacyTurbo)
+                SetLegacyTurbo(mode == 0x05);
+            else
+                SendCommand("SetGamingMiscSetting", (ulong)0x0B | ((ulong)mode << 8));
             SyncWindowsPowerMode(mode);
+        }
+
+        // Same sequence the PH315-53 turbo key triggers (verified by rawPSense), minus PredatorSense's battery check.
+        private void SetLegacyTurbo(bool on)
+        {
+            _legacyTurboOn ??= IsLegacyTurboOn();
+            if (_legacyTurboOn == on) return;
+
+            SendCommand("SetGamingLED", on ? 0x10001UL : 0x1UL);
+            SendCommand("SetGamingFanBehavior", on ? 0x820009UL : 0x410009UL);
+            // CPU/GPU overclock levels; these return the applied level rather than a status code
+            SendCommand("SetGamingMiscSetting", on ? 0x205UL : 0x5UL);
+            SendCommand("SetGamingMiscSetting", on ? 0x207UL : 0x7UL);
+            _legacyTurboOn = on;
+
+            // Leaving turbo resets both fans to auto; put back what the user had picked
+            if (!on && _lastFanMode != 0x01)
+                SetFanBehavior(_lastFanMode);
+        }
+
+        private bool IsLegacyTurboOn()
+        {
+            var (ok, output) = SendCommand("GetGamingLED", 0x1UL);
+            return ok && ((output >> 8) & 0xFF) != 0;
+        }
+
+        /// <summary>Hands both fans back to the firmware's automatic control.</summary>
+        public void RestoreAutoFans()
+        {
+            SendCommand("SetGamingFanBehavior", 0x09UL | (0x01UL << 16) | (0x01UL << 22));
         }
 
         public void SetFanBehavior(byte mode)
         {
+            _lastFanMode = mode;
             SendCommand("SetGamingFanBehavior", (ulong)(0x09 | ((ulong)mode << 16) | ((ulong)mode << 22)));
 
             if (mode == 0x03)
@@ -221,8 +286,19 @@ namespace PredatorControlApp
             SendLedCommand(payload);
         }
 
-        public int CpuTemp => GetSensorReading(0x01);
-        public int GpuTemp => GetSensorReading(0x0A);
+        public int CpuTemp => GetSensorReading(0x01, 0xFF);
+
+        public int GpuTemp
+        {
+            get
+            {
+                int ec = GetSensorReading(0x0A, 0xFF);
+                if (ec > 0 || !AllowGpuDriverQuery) return ec;
+                int nv = Nvml.GpuTemperature();
+                return nv > 0 ? nv : ec;
+            }
+        }
+
         public int CpuFanRpm => GetSensorReading(0x02);
         public int GpuFanRpm => GetSensorReading(0x06);
 
